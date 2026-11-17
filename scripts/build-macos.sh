@@ -94,6 +94,12 @@ OPENSSL_VERSION="3.5.7"
 OPENSSL_SHA256="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
 OPENSSL_TARBALL_URL="https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
 
+# libvpx (BSD-3-Clause) provides the VP9 encoder/decoder (--enable-libvpx),
+# built static so the binary stays free of non-system dylibs.
+LIBVPX_VERSION="1.15.2"
+LIBVPX_SHA256="26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa"
+LIBVPX_TARBALL_URL="https://github.com/webmproject/libvpx/archive/refs/tags/v${LIBVPX_VERSION}.tar.gz"
+
 BUILD_ROOT="${REPO_ROOT}/build/${TARGET}"
 TARBALL="${REPO_ROOT}/build/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 SOURCE_DIR="${BUILD_ROOT}/ffmpeg-${FFMPEG_VERSION}"
@@ -102,6 +108,8 @@ TARBALL_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 OUT_DIR="${REPO_ROOT}/dist/${TARGET}"
 OPENSSL_TARBALL="${REPO_ROOT}/build/openssl-${OPENSSL_VERSION}.tar.gz"
 OPENSSL_SOURCE_DIR="${BUILD_ROOT}/openssl-${OPENSSL_VERSION}"
+LIBVPX_TARBALL="${REPO_ROOT}/build/libvpx-${LIBVPX_VERSION}.tar.gz"
+LIBVPX_SOURCE_DIR="${BUILD_ROOT}/libvpx-${LIBVPX_VERSION}"
 DEPS_PREFIX="${BUILD_ROOT}/deps"
 
 # ---- host check -------------------------------------------------------------
@@ -191,6 +199,48 @@ else
     echo "✓ OpenSSL already built at $DEPS_PREFIX"
 fi
 
+# ---- libvpx (VP9) -------------------------------------------------------------
+if [ ! -f "$LIBVPX_TARBALL" ]; then
+    echo "▶ downloading libvpx ${LIBVPX_VERSION} source"
+    curl -fL "$LIBVPX_TARBALL_URL" -o "$LIBVPX_TARBALL.partial"
+    mv "$LIBVPX_TARBALL.partial" "$LIBVPX_TARBALL"
+else
+    echo "✓ libvpx tarball cached at $LIBVPX_TARBALL"
+fi
+
+echo "▶ verifying libvpx checksum"
+LIBVPX_ACTUAL_SHA256="$(shasum -a 256 "$LIBVPX_TARBALL" | awk '{print $1}')"
+if [ "$LIBVPX_ACTUAL_SHA256" != "$LIBVPX_SHA256" ]; then
+    echo "✗ checksum mismatch for $LIBVPX_TARBALL" >&2
+    echo "   expected: $LIBVPX_SHA256" >&2
+    echo "   actual:   $LIBVPX_ACTUAL_SHA256" >&2
+    exit 1
+fi
+echo "  ✓ sha256 ok"
+
+if [ ! -f "$DEPS_PREFIX/lib/libvpx.a" ]; then
+    if [ ! -d "$LIBVPX_SOURCE_DIR" ]; then
+        echo "▶ extracting libvpx"
+        tar -xf "$LIBVPX_TARBALL" -C "$BUILD_ROOT"
+    fi
+    echo "▶ building libvpx ${LIBVPX_VERSION} (static) for ${TARGET}"
+    (
+        cd "$LIBVPX_SOURCE_DIR"
+        CC=clang ./configure \
+            --prefix="$DEPS_PREFIX" --libdir="$DEPS_PREFIX/lib" \
+            --target=arm64-darwin20-gcc \
+            --enable-static --disable-shared --enable-pic \
+            --disable-examples --disable-tools --disable-docs --disable-unit-tests \
+            --extra-cflags="-mmacosx-version-min=12.0" \
+            >/dev/null
+        make -j"$(sysctl -n hw.ncpu)" >/dev/null 2>&1
+        make install >/dev/null
+    )
+    echo "  ✓ libvpx installed to $DEPS_PREFIX"
+else
+    echo "✓ libvpx already built at $DEPS_PREFIX"
+fi
+
 export PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig"
 
 # ---- configure --------------------------------------------------------------
@@ -236,12 +286,13 @@ if [ ! -f "$STAMP" ]; then
         --disable-debug \
         --enable-videotoolbox --enable-audiotoolbox \
         --enable-openssl \
+        --enable-libvpx \
         --pkg-config-flags=--static \
-        --enable-encoder=h264_videotoolbox,hevc_videotoolbox,aac \
-        --enable-decoder=h264,hevc,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
-        --enable-muxer=flv,mp4,mov \
+        --enable-encoder=h264_videotoolbox,hevc_videotoolbox,libvpx_vp9,aac \
+        --enable-decoder=h264,hevc,libvpx_vp9,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
+        --enable-muxer=flv,mp4,mov,webm \
         --enable-demuxer=flv,mpegts,mov,mp4 \
-        --enable-parser=h264,hevc,aac \
+        --enable-parser=h264,hevc,vp9,aac \
         --enable-protocol=rtmp,rtmps,tls,tcp,udp,file,pipe \
         --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb \
         --enable-filter=scale,fps,format,aresample,asetnsamples,anull,null,copy \
@@ -334,7 +385,7 @@ echo "  ✓ TLS backend is openssl"
 # (grep -q exits early on match, which causes strings to die on EPIPE; with
 # `set -o pipefail` the whole pipeline then looks like a failure.)
 SYMS="$(strings "$BIN")"
-for needed in 'h264_videotoolbox' 'hevc_videotoolbox' 'aac '; do
+for needed in 'h264_videotoolbox' 'hevc_videotoolbox' 'libvpx-vp9' 'aac '; do
     case "$SYMS" in
         *"$needed"*) ;;
         *)
@@ -343,7 +394,7 @@ for needed in 'h264_videotoolbox' 'hevc_videotoolbox' 'aac '; do
             ;;
     esac
 done
-echo "  ✓ videotoolbox + native aac encoders present"
+echo "  ✓ videotoolbox + libvpx-vp9 + native aac encoders present"
 
 # Native target: also exercise the binary end-to-end as belt+suspenders.
 if ! "$BIN" -hide_banner -version >/dev/null; then
@@ -487,6 +538,9 @@ Statically linked third-party libraries:
   OpenSSL ${OPENSSL_VERSION} (Apache-2.0 license, see OPENSSL-LICENSE)
   Source tarball: ${OPENSSL_TARBALL_URL}
   SHA256:         ${OPENSSL_SHA256}
+  libvpx ${LIBVPX_VERSION} (BSD-3-Clause)
+  Source tarball: ${LIBVPX_TARBALL_URL}
+  SHA256:         ${LIBVPX_SHA256}
 
 This binary is LGPL-2.1-only. Per LGPL § 6, downstream end users are entitled
 to the complete corresponding source code for this FFmpeg build. The source
