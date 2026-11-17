@@ -384,12 +384,43 @@ for wp_license in /mingw64/share/licenses/winpthreads/COPYING /mingw64/share/lic
     fi
 done
 # libvpx (BSD-3-Clause) — ships with the bundled libvpx DLL.
-vpx_license="$(ls /mingw64/share/licenses/libvpx/* 2>/dev/null | head -n1 || true)"
+vpx_license="$(ls /mingw64/share/licenses/*vpx*/* 2>/dev/null | head -n1 || true)"
 if [ -n "$vpx_license" ] && [ -f "$vpx_license" ]; then
     cp "$vpx_license" "$OUT_DIR/LIBVPX-LICENSE.txt"
 else
-    echo "✗ libvpx license not found under /mingw64/share/licenses/libvpx/" >&2
-    exit 1
+    # The MSYS2 package doesn't always install its license; ship the upstream
+    # BSD-3-Clause text (libvpx's LICENSE) instead.
+    cat > "$OUT_DIR/LIBVPX-LICENSE.txt" <<'VPXLIC'
+Copyright (c) 2010, The WebM Project authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+
+  * Neither the name of Google, nor the WebM Project, nor the names
+    of its contributors may be used to endorse or promote products
+    derived from this software without specific prior written
+    permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+VPXLIC
 fi
 # GCC runtime: ship the Runtime Library Exception (the term that makes
 # redistribution alongside our binary copyleft-free) plus the GPLv3 base text.
