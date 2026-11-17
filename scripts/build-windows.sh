@@ -92,6 +92,7 @@ FFMPEG_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 case "$FFMPEG_VERSION" in
     8.1.2) SHA256="464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" ;;
     8.1.1) SHA256="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3" ;;
+    9.0.2) SHA256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" ;;
     *)
         echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-windows.sh" >&2
         echo "  add a case branch after verifying against ffmpeg.org" >&2
