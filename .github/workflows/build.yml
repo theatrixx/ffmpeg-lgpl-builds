@@ -168,7 +168,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates pkg-config xz-utils \
             openssl \
-            libgnutls28-dev libvpx-dev ${{ matrix.extra_apt }}
+            libgnutls28-dev ${{ matrix.extra_apt }}
 
       - name: build
         run: scripts/build-linux.sh --target ${{ matrix.target }}

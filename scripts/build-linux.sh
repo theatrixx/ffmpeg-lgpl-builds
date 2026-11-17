@@ -7,7 +7,7 @@
 #
 # Unlike the macOS and Windows builds, this binary is NOT self-contained: it
 # runs inside the Polycast Docker image, which provides the external libraries
-# (gnutls, libva, libvpx) via apt. So FFmpeg's own libraries are static
+# (gnutls, libva) via apt; libvpx is linked statically. So FFmpeg's own libraries are static
 # (--enable-static), but the external deps link dynamically against the image's
 # shared objects — the standard, and for VAAPI the only practical, approach in a
 # container. Build dependencies are installed by the CI workflow (see
@@ -103,6 +103,16 @@ PREFIX="${BUILD_ROOT}/install"
 TARBALL_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 OUT_DIR="${REPO_ROOT}/dist/${TARGET}"
 
+# libvpx (BSD-3-Clause) is built from source and linked statically so the
+# binary doesn't depend on the host's libvpx SONAME (Debian/Ubuntu/Fedora each
+# ship a different one).
+LIBVPX_VERSION="1.15.2"
+LIBVPX_SHA256="26fcd3db88045dee380e581862a6ef106f49b74b6396ee95c2993a260b4636aa"
+LIBVPX_TARBALL_URL="https://github.com/webmproject/libvpx/archive/refs/tags/v${LIBVPX_VERSION}.tar.gz"
+LIBVPX_TARBALL="${REPO_ROOT}/build/libvpx-${LIBVPX_VERSION}.tar.gz"
+LIBVPX_SOURCE_DIR="${BUILD_ROOT}/libvpx-${LIBVPX_VERSION}"
+DEPS_PREFIX="${BUILD_ROOT}/deps"
+
 # ---- host check -------------------------------------------------------------
 # Native build: the runner's arch must match the target. uname -m reports
 # x86_64 / aarch64, which is exactly FFMPEG_ARCH.
@@ -145,6 +155,38 @@ if [ "$HW_ACCEL" = "yes" ]; then
     export PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
 
+# ---- libvpx (static) ----------------------------------------------------------
+if [ ! -f "$DEPS_PREFIX/lib/libvpx.a" ]; then
+    if [ ! -f "$LIBVPX_TARBALL" ]; then
+        echo "▶ downloading libvpx ${LIBVPX_VERSION} source"
+        curl -fL "$LIBVPX_TARBALL_URL" -o "$LIBVPX_TARBALL.partial"
+        mv "$LIBVPX_TARBALL.partial" "$LIBVPX_TARBALL"
+    fi
+    echo "▶ verifying libvpx checksum"
+    if [ "$(sha256sum "$LIBVPX_TARBALL" | awk '{print $1}')" != "$LIBVPX_SHA256" ]; then
+        echo "✗ checksum mismatch for $LIBVPX_TARBALL" >&2
+        exit 1
+    fi
+    rm -rf "$LIBVPX_SOURCE_DIR"
+    tar -xf "$LIBVPX_TARBALL" -C "$BUILD_ROOT"
+    echo "▶ building libvpx ${LIBVPX_VERSION} (static)"
+    (
+        cd "$LIBVPX_SOURCE_DIR"
+        ./configure \
+            --prefix="$DEPS_PREFIX" --libdir="$DEPS_PREFIX/lib" \
+            --target=x86_64-linux-gcc \
+            --enable-static --disable-shared --enable-pic \
+            --disable-examples --disable-tools --disable-docs --disable-unit-tests \
+            >/dev/null
+        make -j"$(nproc)" >/dev/null
+        make install >/dev/null
+    )
+    echo "  ✓ libvpx installed to $DEPS_PREFIX"
+else
+    echo "✓ libvpx already built at $DEPS_PREFIX"
+fi
+export PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
 # External deps come from the distro (apt); confirm pkg-config sees each before
 # we configure, so a missing -dev package fails here with a clear message rather
 # than as an opaque configure error. arm64 needs only gnutls + vpx (no GPU).
@@ -157,7 +199,7 @@ for pcfile in $PC_DEPS; do
             ffnvcodec) echo "  the pinned nv-codec-headers ${NVCODEC_TAG} install above failed — check git clone + make" >&2 ;;
             gnutls)    echo "  install: apt-get install libgnutls28-dev" >&2 ;;
             libva|libva-drm) echo "  install: apt-get install libva-dev" >&2 ;;
-            vpx)       echo "  install: apt-get install libvpx-dev" >&2 ;;
+            vpx)       echo "  the libvpx build above failed to produce a vpx.pc" >&2 ;;
         esac
         exit 1
     fi
@@ -202,7 +244,7 @@ if [ ! -f "$STAMP" ]; then
     #                              license discipline + no surprise deps
     #   --enable-static --disable-shared
     #                              FFmpeg's own libs static *into* the binary;
-    #                              external deps (gnutls/va/vpx) link
+    #                              external deps (gnutls/va) link
     #                              dynamically against the image's shared objects.
     #   --enable-libvpx            BSD-3-Clause VP9 software encoder/decoder. LGPL-clean.
     #   --enable-gnutls            (mac securetransport / win schannel → Linux
@@ -292,7 +334,7 @@ echo "  ✓ no GPL / non-free / v3 flags"
 
 # This binary links external libs dynamically (it isn't self-contained), so the
 # meaningful linkage check is the inverse of macOS's: confirm it does NOT pull in
-# any GPL/non-free codec library. libva/gnutls/libvpx/libc are expected.
+# any GPL/non-free codec library. libva/gnutls/libc are expected.
 DT_DEPS="$(ldd "$BIN" 2>/dev/null | awk '{print $1}')"
 FORBIDDEN_LIBS="$(echo "$DT_DEPS" | grep -E 'libx264|libx265|libfdk|libav.*gpl' || true)"
 if [ -n "$FORBIDDEN_LIBS" ]; then
@@ -447,7 +489,7 @@ scripts used to produce this binary are at:
 
   https://github.com/serversideup/ffmpeg-lgpl-builds
 
-This binary links its external libraries (gnutls, libva, libvpx) dynamically
+This binary links its external libraries (gnutls, libva) dynamically
 against the libraries provided by the Polycast Docker image's distribution
 packages; those libraries carry their own licenses (LGPL/BSD/MIT). Check out the
 tag matching this binary's release to reproduce the build.
