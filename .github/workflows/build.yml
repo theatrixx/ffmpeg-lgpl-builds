@@ -30,16 +30,13 @@ jobs:
   build-macos:
     name: build ${{ matrix.target }}
     # Depot's macOS runners are Apple Silicon (M2) only — see
-    # https://depot.dev/docs/github-actions/runner-types. Both the native
-    # arm64 build and the cross-compiled x86_64 build run here; the script
-    # handles the cross-compilation switch internally.
+    # https://depot.dev/docs/github-actions/runner-types.
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
         target:
           - aarch64-apple-darwin
-          - x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v6
 
@@ -57,10 +54,6 @@ jobs:
       # the build aborts confusingly without it, so ensure it explicitly.
       - name: install pkg-config
         run: brew list pkg-config >/dev/null 2>&1 || brew install pkg-config
-
-      - name: install nasm (x86_64 cross-build only)
-        if: matrix.target == 'x86_64-apple-darwin'
-        run: brew install nasm
 
       - name: build
         run: scripts/build-macos.sh --target ${{ matrix.target }}
@@ -112,7 +105,7 @@ jobs:
             mingw-w64-x86_64-yasm
             mingw-w64-x86_64-amf-headers
             mingw-w64-x86_64-libvpl
-            mingw-w64-x86_64-openh264
+            mingw-w64-x86_64-libvpx
             git
             diffutils
             tar
@@ -149,9 +142,6 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             extra_apt: nasm libva-dev
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            extra_apt: ""
     steps:
       # The bare bookworm container has no git; actions/checkout needs it.
       - name: install git for checkout
@@ -171,7 +161,7 @@ jobs:
       # The -dev packages build-linux.sh verifies via pkg-config; they link
       # dynamically and the Polycast Docker image provides the runtime
       # counterparts (same bookworm SONAMEs). nasm (x86 SIMD) + libva-dev (VAAPI)
-      # are x86_64-only — arm64 is software (gnutls + openh264). All in Debian
+      # are needed for the x86_64 build. All in Debian
       # main; no sudo (the container runs as root).
       - name: install build dependencies
         run: |
@@ -179,7 +169,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates pkg-config xz-utils \
             openssl \
-            libgnutls28-dev libopenh264-dev ${{ matrix.extra_apt }}
+            libgnutls28-dev libvpx-dev ${{ matrix.extra_apt }}
 
       - name: build
         run: scripts/build-linux.sh --target ${{ matrix.target }}
@@ -254,12 +244,11 @@ jobs:
             grep -E '^\s+--' scripts/build-windows.sh | sed 's/\\$//' | sed 's/^[[:space:]]*//' | sort -u
             echo '```'
             echo
-            echo "### Linux (\`x86_64-unknown-linux-gnu\` + \`aarch64-unknown-linux-gnu\`)"
+            echo "### Linux (\`x86_64-unknown-linux-gnu\`)"
             echo
-            echo "- x86_64: NVENC + VAAPI + libopenh264 + native aac, gnutls TLS."
-            echo "- arm64: libopenh264 + native aac (software) + passthrough, gnutls TLS — no GPU encoders (Ampere/Graviton have none)."
+            echo "- x86_64: NVENC + VAAPI + libvpx_vp9 + native aac, gnutls TLS."
             echo
-            echo "Both are LGPL-only. The exact \`./configure\` line for each target is recorded in that tarball's \`SOURCE.txt\`."
+            echo "LGPL-only. The exact \`./configure\` line for each target is recorded in that tarball's \`SOURCE.txt\`."
             echo
             echo "## Artifacts"
             echo

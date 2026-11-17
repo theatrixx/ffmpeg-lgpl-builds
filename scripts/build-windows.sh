@@ -18,11 +18,11 @@
 #     libwinpthread-1.dll                   (mingw-w64 pthread runtime)
 #     libgcc_s_seh-1.dll                    (GCC unwinder — libvpl dep)
 #     libstdc++-6.dll                       (GCC C++ runtime — libvpl dep)
-#     libopenh264-7.dll                     (Cisco OpenH264 — software H.264 encoder)
+#     libvpx-*.dll                          (libvpx — software VP9 encoder)
 #     COPYING.LGPLv2.1
 #     LIBVPL-LICENSE.txt
 #     LIBWINPTHREAD-LICENSE.txt
-#     LIBOPENH264-LICENSE.txt
+#     LIBVPX-LICENSE.txt
 #     GCC-RUNTIME-LIBRARY-EXCEPTION.txt
 #     GCC-LICENSE.txt
 #     SOURCE.txt
@@ -149,16 +149,16 @@ fi
 echo "▶ installing pinned nv-codec-headers ${NVCODEC_TAG} (min NVIDIA driver 471.41 Win / 470.57.02 Linux)"
 make -C "$NVCODEC_DIR" PREFIX=/mingw64 install
 
-# Encoder packages. NVENC (just installed above) + libvpl + openh264 ship
-# pkg-config files; AMF is header-only and detected by a path probe. openh264
+# Encoder packages. NVENC (just installed above) + libvpl + libvpx ship
+# pkg-config files; AMF is header-only and detected by a path probe. libvpx
 # is the BSD-2-Clause software H.264 encoder used as the CPU fallback.
-for pcfile in ffnvcodec vpl openh264; do
+for pcfile in ffnvcodec vpl vpx; do
     if ! "$PKG_CONFIG" --exists "$pcfile" 2>/dev/null; then
         echo "✗ pkg-config can't find $pcfile" >&2
         case "$pcfile" in
             ffnvcodec) echo "  the pinned nv-codec-headers ${NVCODEC_TAG} build/install above failed — check git clone + make" >&2 ;;
             vpl)       echo "  install: pacman -S mingw-w64-x86_64-libvpl" >&2 ;;
-            openh264)  echo "  install: pacman -S mingw-w64-x86_64-openh264" >&2 ;;
+            vpx)       echo "  install: pacman -S mingw-w64-x86_64-libvpx" >&2 ;;
         esac
         exit 1
     fi
@@ -202,7 +202,7 @@ cd "$SOURCE_DIR"
 
 STAMP="${SOURCE_DIR}/.configured-for-${TARGET}"
 if [ ! -f "$STAMP" ]; then
-    echo "▶ configuring (LGPL only, NVENC + QSV + AMF + libopenh264 CPU fallback, Schannel TLS) for ${TARGET}"
+    echo "▶ configuring (LGPL only, NVENC + QSV + AMF + libvpx VP9, Schannel TLS) for ${TARGET}"
     # Flag rationale (deltas from build-macos.sh in parens):
     #   --disable-gpl / --nonfree / --version3 / --autodetect
     #                              same — license discipline + no surprise deps
@@ -217,8 +217,8 @@ if [ ! -f "$STAMP" ]; then
     #   --enable-nvenc             (mac h264_videotoolbox → Windows NVIDIA NVENC)
     #   --enable-amf               (… AMD AMF on Polaris+/Ryzen APUs)
     #   --enable-libvpl            (… Intel QSV via oneVPL dispatcher)
-    #   --enable-libopenh264       software (CPU) H.264 fallback for hosts with no
-    #                              usable GPU encoder. BSD-2-Clause → LGPL-clean, so
+    #   --enable-libvpx            software (CPU) VP9 encoder for hosts with no
+    #                              usable GPU encoder. BSD-3-Clause → LGPL-clean, so
     #                              it doesn't trip the forbidden-flag guardrail below.
     #   --enable-schannel          (mac --enable-securetransport → Windows Schannel)
     #   --target-os=mingw32        FFmpeg's identifier for the mingw-w64 target
@@ -257,13 +257,13 @@ if [ ! -f "$STAMP" ]; then
         --enable-nvenc \
         --enable-amf \
         --enable-libvpl \
-        --enable-libopenh264 \
+        --enable-libvpx \
         --enable-schannel \
-        --enable-encoder=h264_nvenc,hevc_nvenc,h264_amf,hevc_amf,h264_qsv,hevc_qsv,libopenh264,aac \
-        --enable-decoder=h264,hevc,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
-        --enable-muxer=flv,mp4,mov \
+        --enable-encoder=h264_nvenc,hevc_nvenc,h264_amf,hevc_amf,h264_qsv,hevc_qsv,libvpx_vp9,aac \
+        --enable-decoder=h264,hevc,libvpx_vp9,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
+        --enable-muxer=flv,mp4,mov,webm \
         --enable-demuxer=flv,mpegts,mov,mp4 \
-        --enable-parser=h264,hevc,aac \
+        --enable-parser=h264,hevc,vp9,aac \
         --enable-protocol=rtmp,rtmps,tls,tcp,udp,file,pipe \
         --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb \
         --enable-filter=scale,fps,format,aresample,asetnsamples,anull,null,copy \
@@ -299,7 +299,7 @@ echo "▶ verifying binary"
 
 # Read the configuration string out of the binary directly. Defence-in-depth
 # even though we set the flags ourselves — catches an autodetect leak.
-CONFIG_LINE="$(strings "$BIN" | grep -E 'configuration:.*--disable-gpl' | head -n1 || true)"
+CONFIG_LINE="$(strings "$BIN" | grep -E '(configuration:[[:space:]]*)?--disable-gpl' | head -n1 || true)"
 if [ -z "$CONFIG_LINE" ]; then
     echo "✗ couldn't find embedded configuration string in $BIN" >&2
     exit 1
@@ -317,7 +317,7 @@ echo "  ✓ no GPL / non-free / v3 flags"
 # as build-macos.sh; captures `strings` output once to avoid pipefail / EPIPE
 # when grep -q would close the pipe early.
 SYMS="$(strings "$BIN")"
-for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_qsv' 'libopenh264' 'aac '; do
+for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_qsv' 'libvpx-vp9' 'aac '; do
     case "$SYMS" in
         *"$needed"*) ;;
         *)
@@ -326,7 +326,7 @@ for needed in 'h264_nvenc' 'hevc_nvenc' 'h264_amf' 'hevc_amf' 'h264_qsv' 'hevc_q
             ;;
     esac
 done
-echo "  ✓ nvenc + amf + qsv + libopenh264 + aac encoders present"
+echo "  ✓ nvenc + amf + qsv + libvpx_vp9 + aac encoders present"
 
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"
@@ -351,16 +351,15 @@ cp "$FFPROBE_BIN" "$OUT_DIR/ffprobe.exe"
 #   libstdc++-6.dll       Library Exception, which explicitly permits shipping
 #                         these alongside a GCC-compiled program without
 #                         imposing copyleft on that program.
-#   libopenh264-7.dll   — Cisco OpenH264 software H.264 encoder (BSD-2-Clause).
-#                         MSYS2 links it as a DLL (its import lib wins over the
-#                         static archive), so it ships next to ffmpeg.exe. The
-#                         glob tolerates openh264 soname bumps across rebuilds.
+#   libvpx-*.dll        — libvpx VP9 encoder (BSD-3-Clause). MSYS2 links it as
+#                         a DLL, so it ships next to ffmpeg.exe. The glob
+#                         tolerates soname bumps across rebuilds.
 for src in \
     /mingw64/bin/libvpl-2.dll \
     /mingw64/bin/libwinpthread-1.dll \
     /mingw64/bin/libgcc_s_seh-1.dll \
     /mingw64/bin/libstdc++-6.dll \
-    /mingw64/bin/libopenh264-*.dll; do
+    /mingw64/bin/libvpx-*.dll; do
     name="$(basename "$src")"
     if [ ! -f "$src" ]; then
         echo "✗ $name not found at $src" >&2
@@ -384,13 +383,12 @@ for wp_license in /mingw64/share/licenses/winpthreads/COPYING /mingw64/share/lic
         break
     fi
 done
-# OpenH264 (BSD-2-Clause) — must ship with the bundled libopenh264 DLL. Grab
-# whatever license file MSYS2 installs for the package, regardless of its name.
-openh264_license="$(ls /mingw64/share/licenses/openh264/* 2>/dev/null | head -n1 || true)"
-if [ -n "$openh264_license" ] && [ -f "$openh264_license" ]; then
-    cp "$openh264_license" "$OUT_DIR/LIBOPENH264-LICENSE.txt"
+# libvpx (BSD-3-Clause) — ships with the bundled libvpx DLL.
+vpx_license="$(ls /mingw64/share/licenses/libvpx/* 2>/dev/null | head -n1 || true)"
+if [ -n "$vpx_license" ] && [ -f "$vpx_license" ]; then
+    cp "$vpx_license" "$OUT_DIR/LIBVPX-LICENSE.txt"
 else
-    echo "✗ openh264 license not found under /mingw64/share/licenses/openh264/ — required to ship the bundled libopenh264 DLL" >&2
+    echo "✗ libvpx license not found under /mingw64/share/licenses/libvpx/" >&2
     exit 1
 fi
 # GCC runtime: ship the Runtime Library Exception (the term that makes
@@ -443,6 +441,8 @@ audit_import_closure() {
                 queue+=("$OUT_DIR/$dll")    # bundled — recurse into its imports
             elif [ -f "$SYSTEM32/$dll" ]; then
                 :                           # Windows system DLL — Windows provides it
+            elif [[ "$lc" == api-ms-win-* || "$lc" == ext-ms-win-* ]]; then
+                :                           # Windows ApiSet virtual DLLs (resolved in-memory)
             else
                 echo "✗ unresolved runtime dependency: $dll" >&2
                 echo "  reached from the ffmpeg.exe/ffprobe.exe import graph;" >&2
@@ -532,13 +532,10 @@ ARCHIVE_FILES=(
     COPYING.LGPLv2.1
     SOURCE.txt
 )
-# libopenh264 ships under a soname-versioned name (libopenh264-N.dll) that the
-# staging step copied into $OUT_DIR. ffmpeg.exe imports it directly, so it MUST
-# go in the archive — pick up whatever name it landed as.
-for openh264_dll in "$OUT_DIR"/libopenh264-*.dll; do
-    [ -f "$openh264_dll" ] && ARCHIVE_FILES+=("$(basename "$openh264_dll")")
+for vpx_dll in "$OUT_DIR"/libvpx-*.dll; do
+    [ -f "$vpx_dll" ] && ARCHIVE_FILES+=("$(basename "$vpx_dll")")
 done
-for optional in LIBVPL-LICENSE.txt LIBWINPTHREAD-LICENSE.txt LIBOPENH264-LICENSE.txt GCC-RUNTIME-LIBRARY-EXCEPTION.txt GCC-LICENSE.txt; do
+for optional in LIBVPX-LICENSE.txt LIBVPL-LICENSE.txt LIBWINPTHREAD-LICENSE.txt GCC-RUNTIME-LIBRARY-EXCEPTION.txt GCC-LICENSE.txt; do
     if [ -f "$OUT_DIR/$optional" ]; then
         ARCHIVE_FILES+=("$optional")
     fi

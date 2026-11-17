@@ -25,7 +25,7 @@ Hardware-accelerated encoders are enabled per-platform from LGPL-clean SDK heade
 - **macOS:** VideoToolbox (`h264_videotoolbox`, `hevc_videotoolbox`)
 - **Windows:** NVIDIA NVENC (`h264_nvenc`, `hevc_nvenc`), Intel Quick Sync via oneVPL (`h264_qsv`, `hevc_qsv`), AMD AMF (`h264_amf`, `hevc_amf`)
 
-Windows also enables **libopenh264** (`--enable-libopenh264`), a software (CPU) H.264 encoder used as a last-resort fallback on hosts with no usable GPU encoder. OpenH264 is BSD-2-Clause, so it stays LGPL-clean and doesn't trip the forbidden-flag check (it is *not* `--enable-gpl`/`--enable-nonfree`/`--enable-version3`). It is provided by the MSYS2 `mingw-w64-x86_64-openh264` package and ships as `libopenh264-7.dll` bundled alongside `ffmpeg.exe` (with its BSD-2-Clause license in `LIBOPENH264-LICENSE.txt`), the same way `libvpl-2.dll` is; the C++ runtime it needs, `libstdc++-6.dll`, is already in the bundle closure via libvpl.
+Windows and Linux also enable **libvpx** (`--enable-libvpx`, VP9 via `libvpx_vp9`, BSD-3-Clause; Windows bundles `libvpx-*.dll` + `LIBVPX-LICENSE.txt`).
 
 The build is verified post-link to confirm none of the banned flags ended up enabled and that the linkage matches the platform's expectations:
 
@@ -42,7 +42,7 @@ Tag format: `v<ffmpeg-version>-<run-number>`, e.g. `v8.1.2-42`, where `<run-numb
 
 Per release, per target, the published artifacts are:
 
-- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). macOS builds additionally include `OPENSSL-LICENSE` (OpenSSL 3 is statically linked in as the TLS backend, Apache-2.0-licensed). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`, and `libopenh264-7.dll` (Cisco OpenH264 software encoder, BSD-2-Clause) + `LIBOPENH264-LICENSE.txt`.
+- `ffmpeg-<version>-<triple>.tar.gz` — contains the `ffmpeg` (or `ffmpeg.exe`) and `ffprobe` binaries, `COPYING.LGPLv2.1`, and `SOURCE.txt` (provenance record). macOS builds additionally include `OPENSSL-LICENSE` (OpenSSL 3 is statically linked in as the TLS backend, Apache-2.0-licensed). Windows builds additionally include `libvpl-2.dll` (Intel oneVPL dispatcher, MIT-licensed) + `LIBVPL-LICENSE.txt`, `libwinpthread-1.dll` (mingw-w64 pthread runtime, BSD-style permissive) + `LIBWINPTHREAD-LICENSE.txt`, and `libvpx-*.dll` (BSD-3-Clause) + `LIBVPX-LICENSE.txt`.
 - `ffmpeg-<version>-<triple>.tar.gz.sha256`
 
 TLS backend per platform (for `rtmps`/`https`): **macOS = OpenSSL 3** (Apache-2.0, statically linked), **Windows = Schannel** (system SSPI), **Linux = GnuTLS** (dynamic, distro-provided). macOS deliberately does not use SecureTransport or LibreSSL/libtls: FFmpeg's RTMP layer probes its transport with nonblocking reads, and both of those backends turn the probe into a blocking read that waits on the server's next ack — RTMPS throughput collapses to ~2.5% of real time (measured identically on both; OpenSSL and GnuTLS handle the probe correctly). The macOS and Linux builds gate every ship on an RTMPS throughput smoke test: 10s of 1080p60 at ~8 Mbps pushed to a local MediaMTX over TLS must sustain ≥ 0.9x real time — a handshake-only check passes on a backend that is unusable for streaming.
@@ -50,10 +50,8 @@ TLS backend per platform (for `rtmps`/`https`): **macOS = OpenSSL 3** (Apache-2.
 Currently supported targets:
 
 - `aarch64-apple-darwin` (macOS, Apple Silicon)
-- `x86_64-apple-darwin` (macOS, Intel — cross-compiled from Apple Silicon)
 - `x86_64-pc-windows-msvc` (Windows x64, built with mingw-w64 gcc via MSYS2 — the "msvc" in the triple is a consumer convention for "Windows x64"; the resulting PE executable is ABI-compatible regardless of caller toolchain)
-- `x86_64-unknown-linux-gnu` (Linux x64, for Docker). Unlike the desktop targets, this binary is **not** self-contained: it links gnutls / libva / libopenh264 dynamically against the libraries provided by the consuming container's distribution packages. Encoders: `h264_nvenc` (NVIDIA, runtime lib injected by the NVIDIA Container Toolkit), `h264_vaapi` (Intel iGPU + AMD), `libopenh264` (CPU fallback), `aac`. QSV/oneVPL is omitted for now — VAAPI covers Intel iGPUs.
-- `aarch64-unknown-linux-gnu` (Linux ARM, for Docker — e.g. Ampere/Graviton VPSes). **Software-only:** `libopenh264` (CPU) + native `aac`, gnutls TLS, plus stream passthrough. arm64 servers have no NVENC or Intel VAAPI, so there are no GPU encoders; same dynamic-link model as the x64 Linux build.
+- `x86_64-unknown-linux-gnu` (Linux x64, for Docker). Unlike the desktop targets, this binary is **not** self-contained: it links gnutls / libva / libvpx dynamically against the libraries provided by the consuming container's distribution packages. Encoders: `h264_nvenc` (NVIDIA, runtime lib injected by the NVIDIA Container Toolkit), `h264_vaapi` (Intel iGPU + AMD), `libvpx_vp9` (VP9, BSD-3-Clause, dynamic libvpx), `aac`. QSV/oneVPL is omitted for now — VAAPI covers Intel iGPUs.
 
 ## How to bump the FFmpeg version
 

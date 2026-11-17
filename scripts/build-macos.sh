@@ -4,11 +4,8 @@
 #
 # Usage:
 #   scripts/build-macos.sh --target aarch64-apple-darwin
-#   scripts/build-macos.sh --target x86_64-apple-darwin
 #
-# Both targets must run on an Apple Silicon host. The x86_64 build is
-# cross-compiled (clang on macOS can target either arch from either host
-# given the right -arch flag plus FFmpeg's --enable-cross-compile).
+# Must run on an Apple Silicon host.
 #
 # Produces self-contained, statically-linked ffmpeg + ffprobe binaries that
 # link to only macOS system frameworks (no GPL libs, no Homebrew dylibs).
@@ -37,7 +34,7 @@ while [ $# -gt 0 ]; do
             ;;
         *)
             echo "unknown arg: $1" >&2
-            echo "usage: $0 --target {aarch64-apple-darwin|x86_64-apple-darwin}" >&2
+            echo "usage: $0 --target aarch64-apple-darwin" >&2
             exit 2
             ;;
     esac
@@ -45,7 +42,7 @@ done
 
 if [ -z "$TARGET" ]; then
     echo "missing required --target flag" >&2
-    echo "usage: $0 --target {aarch64-apple-darwin|x86_64-apple-darwin}" >&2
+    echo "usage: $0 --target aarch64-apple-darwin" >&2
     exit 2
 fi
 
@@ -53,12 +50,6 @@ case "$TARGET" in
     aarch64-apple-darwin)
         FFMPEG_ARCH="arm64"
         CLANG_ARCH="arm64"
-        CROSS=0
-        ;;
-    x86_64-apple-darwin)
-        FFMPEG_ARCH="x86_64"
-        CLANG_ARCH="x86_64"
-        CROSS=1
         ;;
     *)
         echo "unsupported target: $TARGET" >&2
@@ -80,8 +71,6 @@ FFMPEG_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 # (Case statement instead of an associative array so we stay compatible with
 # macOS's stock bash 3.2.)
 case "$FFMPEG_VERSION" in
-    8.1.2) SHA256="464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" ;;
-    8.1.1) SHA256="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3" ;;
     9.0.2) SHA256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" ;;
     *)
         echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-macos.sh" >&2
@@ -186,9 +175,6 @@ if [ ! -f "$DEPS_PREFIX/lib/libssl.a" ]; then
     fi
     echo "▶ building OpenSSL ${OPENSSL_VERSION} (static) for ${TARGET} — takes a few minutes"
     OPENSSL_TARGET="darwin64-arm64-cc"
-    if [ "$CROSS" = "1" ]; then
-        OPENSSL_TARGET="darwin64-x86_64-cc"
-    fi
     (
         cd "$OPENSSL_SOURCE_DIR"
         ./Configure "$OPENSSL_TARGET" \
@@ -217,14 +203,6 @@ for tool in make clang; do
     fi
 done
 
-# x86_64 builds need nasm for FFmpeg's hand-optimized x86 assembly. The arm64
-# build doesn't need it (aarch64 asm is gas-syntax and goes through clang).
-if [ "$CROSS" = "1" ] && ! command -v nasm >/dev/null 2>&1; then
-    echo "✗ nasm not found in PATH (required for x86_64 hand-optimized asm)" >&2
-    echo "  install: brew install nasm" >&2
-    exit 1
-fi
-
 # Configure-stamp short-circuits reconfigure on repeat runs.
 STAMP="${SOURCE_DIR}/.configured-for-${TARGET}"
 if [ ! -f "$STAMP" ]; then
@@ -248,11 +226,6 @@ if [ ! -f "$STAMP" ]; then
     #                              to ~2.5% of real time (bench-verified
     #                              2026-07; openssl measured 5.1x on the same
     #                              case). Backends conflict; exactly one is set.
-    EXTRA_CONFIGURE=()
-    if [ "$CROSS" = "1" ]; then
-        EXTRA_CONFIGURE+=(--enable-cross-compile)
-    fi
-
     ./configure \
         --prefix="$PREFIX" \
         --disable-gpl --disable-nonfree --disable-version3 \
@@ -275,8 +248,7 @@ if [ ! -f "$STAMP" ]; then
         --arch="$FFMPEG_ARCH" --target-os=darwin \
         --cc="clang -arch ${CLANG_ARCH}" \
         --extra-cflags="-arch ${CLANG_ARCH} -mmacosx-version-min=12.0 -O3" \
-        --extra-ldflags="-arch ${CLANG_ARCH} -mmacosx-version-min=12.0" \
-        ${EXTRA_CONFIGURE[@]+"${EXTRA_CONFIGURE[@]}"}
+        --extra-ldflags="-arch ${CLANG_ARCH} -mmacosx-version-min=12.0"
     touch "$STAMP"
 else
     echo "✓ already configured (rm $STAMP to reconfigure)"
@@ -325,9 +297,9 @@ fi
 echo "  ✓ links only to macOS system frameworks"
 
 # Read the configuration string out of the binary directly. This works for
-# both native and cross-built binaries because the configure flags are baked
+# the binary because the configure flags are baked
 # in as a literal string in the .data section (no need to execute the binary).
-CONFIG_LINE="$(strings "$BIN" | grep -E 'configuration:.*--disable-gpl' || true)"
+CONFIG_LINE="$(strings "$BIN" | grep -E '(configuration:[[:space:]]*)?--disable-gpl' | head -n1 || true)"
 if [ -z "$CONFIG_LINE" ]; then
     echo "✗ couldn't find embedded configuration string in $BIN" >&2
     exit 1
@@ -374,13 +346,11 @@ done
 echo "  ✓ videotoolbox + native aac encoders present"
 
 # Native target: also exercise the binary end-to-end as belt+suspenders.
-if [ "$CROSS" = "0" ]; then
-    if ! "$BIN" -hide_banner -version >/dev/null; then
-        echo "✗ ffmpeg -version failed on native build" >&2
-        exit 1
-    fi
-    echo "  ✓ binary runs natively"
+if ! "$BIN" -hide_banner -version >/dev/null; then
+    echo "✗ ffmpeg -version failed on native build" >&2
+    exit 1
 fi
+echo "  ✓ binary runs natively"
 
 # ffprobe sanity: same source build, same configure flags — so the LGPL/forbidden
 # checks above cover both. We still verify arch and linkage on the ffprobe binary
@@ -404,13 +374,11 @@ if [ -n "$PROBE_NON_SYSTEM" ]; then
 fi
 echo "  ✓ ffprobe links only to macOS system frameworks"
 
-if [ "$CROSS" = "0" ]; then
-    if ! "$FFPROBE_BIN" -hide_banner -version >/dev/null; then
-        echo "✗ ffprobe -version failed on native build" >&2
-        exit 1
-    fi
-    echo "  ✓ ffprobe runs natively"
+if ! "$FFPROBE_BIN" -hide_banner -version >/dev/null; then
+    echo "✗ ffprobe -version failed on native build" >&2
+    exit 1
 fi
+echo "  ✓ ffprobe runs natively"
 
 # ---- rtmps throughput gate (native target only) -------------------------------
 # The regression this catches: a TLS backend whose handshake succeeds but whose
@@ -420,30 +388,29 @@ fi
 # ~8 Mbps to a local MediaMTX over rtmps (self-signed cert) and requires the
 # encode to hold >= 0.9x real time. A plain-rtmp control run first separates a
 # TLS regression from an encoder/runner problem.
-if [ "$CROSS" = "0" ]; then
-    MEDIAMTX_VERSION="1.18.2"
-    MEDIAMTX_SHA256="6a9273ae22a9d0ba85d00d03fdd1b13b9eeaf129ea8b90999ec746367f20449a" # darwin_arm64
-    MEDIAMTX_TARBALL="${REPO_ROOT}/build/mediamtx_v${MEDIAMTX_VERSION}_darwin_arm64.tar.gz"
-    MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/mediamtx_v${MEDIAMTX_VERSION}_darwin_arm64.tar.gz"
-    SMOKE_DIR="${BUILD_ROOT}/rtmps-smoke"
+MEDIAMTX_VERSION="1.18.2"
+MEDIAMTX_SHA256="6a9273ae22a9d0ba85d00d03fdd1b13b9eeaf129ea8b90999ec746367f20449a" # darwin_arm64
+MEDIAMTX_TARBALL="${REPO_ROOT}/build/mediamtx_v${MEDIAMTX_VERSION}_darwin_arm64.tar.gz"
+MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/mediamtx_v${MEDIAMTX_VERSION}_darwin_arm64.tar.gz"
+SMOKE_DIR="${BUILD_ROOT}/rtmps-smoke"
 
-    echo "▶ rtmps throughput gate"
-    if [ ! -f "$MEDIAMTX_TARBALL" ]; then
-        curl -fL "$MEDIAMTX_URL" -o "$MEDIAMTX_TARBALL.partial"
-        mv "$MEDIAMTX_TARBALL.partial" "$MEDIAMTX_TARBALL"
-    fi
-    MEDIAMTX_ACTUAL="$(shasum -a 256 "$MEDIAMTX_TARBALL" | awk '{print $1}')"
-    if [ "$MEDIAMTX_ACTUAL" != "$MEDIAMTX_SHA256" ]; then
-        echo "✗ checksum mismatch for $MEDIAMTX_TARBALL" >&2
-        exit 1
-    fi
+echo "▶ rtmps throughput gate"
+if [ ! -f "$MEDIAMTX_TARBALL" ]; then
+    curl -fL "$MEDIAMTX_URL" -o "$MEDIAMTX_TARBALL.partial"
+    mv "$MEDIAMTX_TARBALL.partial" "$MEDIAMTX_TARBALL"
+fi
+MEDIAMTX_ACTUAL="$(shasum -a 256 "$MEDIAMTX_TARBALL" | awk '{print $1}')"
+if [ "$MEDIAMTX_ACTUAL" != "$MEDIAMTX_SHA256" ]; then
+    echo "✗ checksum mismatch for $MEDIAMTX_TARBALL" >&2
+    exit 1
+fi
 
-    rm -rf "$SMOKE_DIR"
-    mkdir -p "$SMOKE_DIR"
-    tar -xf "$MEDIAMTX_TARBALL" -C "$SMOKE_DIR" mediamtx
-    openssl req -x509 -newkey rsa:2048 -keyout "$SMOKE_DIR/key.pem" \
-        -out "$SMOKE_DIR/cert.pem" -days 1 -nodes -subj "/CN=localhost" 2>/dev/null
-    cat > "$SMOKE_DIR/mediamtx.yml" <<'SMOKEEOF'
+rm -rf "$SMOKE_DIR"
+mkdir -p "$SMOKE_DIR"
+tar -xf "$MEDIAMTX_TARBALL" -C "$SMOKE_DIR" mediamtx
+openssl req -x509 -newkey rsa:2048 -keyout "$SMOKE_DIR/key.pem" \
+    -out "$SMOKE_DIR/cert.pem" -days 1 -nodes -subj "/CN=localhost" 2>/dev/null
+cat > "$SMOKE_DIR/mediamtx.yml" <<'SMOKEEOF'
 logLevel: error
 api: no
 rtsp: no
@@ -459,38 +426,37 @@ rtmpServerKey: key.pem
 paths:
   smoke:
 SMOKEEOF
-    ( cd "$SMOKE_DIR" && ./mediamtx mediamtx.yml > mediamtx.log 2>&1 ) &
-    MEDIAMTX_PID=$!
-    trap 'kill $MEDIAMTX_PID 2>/dev/null || true' EXIT
-    sleep 2
+( cd "$SMOKE_DIR" && ./mediamtx mediamtx.yml > mediamtx.log 2>&1 ) &
+MEDIAMTX_PID=$!
+trap 'kill $MEDIAMTX_PID 2>/dev/null || true' EXIT
+sleep 2
 
-    smoke_push() { # $1 = output URL; echoes the final encode speed multiplier
-        "$BIN" -hide_banner -loglevel warning -stats \
-            -f lavfi -i testsrc2=size=1920x1080:rate=60 -t 10 \
-            -c:v h264_videotoolbox -allow_sw 1 -b:v 8000k -maxrate 8000k -bufsize 8000k \
-            -f flv "$1" 2>&1 |
-            grep -o 'speed= *[0-9.]*x' | tail -1 | grep -o '[0-9.]*'
-    }
+smoke_push() { # $1 = output URL; echoes the final encode speed multiplier
+    "$BIN" -hide_banner -loglevel warning -stats \
+        -f lavfi -i testsrc2=size=1920x1080:rate=60 -t 10 \
+        -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -row-mt 1 -tile-columns 2 \
+        -b:v 8000k -minrate 8000k -maxrate 8000k -bufsize 8000k \
+        -tls_verify 0 \
+        -f flv "$1" 2>&1 |
+        grep -o 'speed= *[0-9.]*x' | tail -1 | grep -o '[0-9.]*'
+}
 
-    RTMP_SPEED="$(smoke_push rtmp://127.0.0.1:13935/smoke || echo 0)"
-    if ! awk "BEGIN{exit !($RTMP_SPEED >= 0.9)}"; then
-        echo "✗ plain-rtmp control push ran at ${RTMP_SPEED:-0}x (< 0.9x) — runner/encoder problem, cannot evaluate TLS" >&2
-        exit 1
-    fi
-    echo "  ✓ rtmp control: ${RTMP_SPEED}x"
-
-    RTMPS_SPEED="$(smoke_push rtmps://127.0.0.1:13936/smoke || echo 0)"
-    if ! awk "BEGIN{exit !($RTMPS_SPEED >= 0.9)}"; then
-        echo "✗ rtmps push ran at ${RTMPS_SPEED:-0}x (< 0.9x) — TLS write path is stalling; refusing to ship" >&2
-        exit 1
-    fi
-    echo "  ✓ rtmps throughput: ${RTMPS_SPEED}x"
-
-    kill $MEDIAMTX_PID 2>/dev/null || true
-    trap - EXIT
-else
-    echo "▶ rtmps throughput gate skipped (cross-built binary can't run on this host)"
+RTMP_SPEED="$(smoke_push rtmp://127.0.0.1:13935/smoke || echo 0)"
+if ! awk "BEGIN{exit !($RTMP_SPEED >= 0.9)}"; then
+    echo "✗ plain-rtmp control push ran at ${RTMP_SPEED:-0}x (< 0.9x) — runner/encoder problem, cannot evaluate TLS" >&2
+    exit 1
 fi
+echo "  ✓ rtmp control: ${RTMP_SPEED}x"
+
+RTMPS_SPEED="$(smoke_push rtmps://127.0.0.1:13936/smoke || echo 0)"
+if ! awk "BEGIN{exit !($RTMPS_SPEED >= 0.9)}"; then
+    echo "✗ rtmps push ran at ${RTMPS_SPEED:-0}x (< 0.9x) — TLS write path is stalling; refusing to ship" >&2
+    exit 1
+fi
+echo "  ✓ rtmps throughput: ${RTMPS_SPEED}x"
+
+kill $MEDIAMTX_PID 2>/dev/null || true
+trap - EXIT
 
 # ---- stage ------------------------------------------------------------------
 echo "▶ staging to $OUT_DIR"

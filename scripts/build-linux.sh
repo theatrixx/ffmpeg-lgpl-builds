@@ -7,7 +7,7 @@
 #
 # Unlike the macOS and Windows builds, this binary is NOT self-contained: it
 # runs inside the Polycast Docker image, which provides the external libraries
-# (gnutls, libva, libopenh264) via apt. So FFmpeg's own libraries are static
+# (gnutls, libva, libvpx) via apt. So FFmpeg's own libraries are static
 # (--enable-static), but the external deps link dynamically against the image's
 # shared objects — the standard, and for VAAPI the only practical, approach in a
 # container. Build dependencies are installed by the CI workflow (see
@@ -15,8 +15,8 @@
 # builds, verifies the LGPL discipline, and packages.
 #
 # Encoders: h264_nvenc (NVIDIA, runtime lib injected by the NVIDIA Container
-# Toolkit), h264_vaapi (Intel iGPU + AMD via libva), libopenh264 (BSD-2-Clause
-# CPU fallback), and native aac. QSV/oneVPL is intentionally omitted for V1 —
+# Toolkit), h264_vaapi (Intel iGPU + AMD via libva), libvpx_vp9 (BSD-3-Clause
+# CPU encoder), and native aac. QSV/oneVPL is intentionally omitted for V1 —
 # VAAPI already covers Intel iGPUs; libvpl can be added later as a fast-follow.
 #
 # TLS for rtmps egress uses gnutls (LGPLv2.1+), so destinations that publish
@@ -61,7 +61,7 @@ fi
 
 # HW_ACCEL gates the GPU encoders. x86_64 servers get NVENC (NVIDIA) + VAAPI
 # (Intel/AMD); arm64 servers have neither in practice (Ampere/Graviton have no
-# GPU), so that build is software-encode + passthrough only — libopenh264 + aac,
+# GPU), so that build is software-encode + passthrough only — libvpx_vp9 + aac,
 # the same gnutls TLS for rtmps egress. Each target builds NATIVELY on its own
 # arch (no cross-compilation); the CI matrix maps target → matching-arch runner.
 case "$TARGET" in
@@ -69,13 +69,9 @@ case "$TARGET" in
         FFMPEG_ARCH="x86_64"
         HW_ACCEL="yes"
         ;;
-    aarch64-unknown-linux-gnu)
-        FFMPEG_ARCH="aarch64"
-        HW_ACCEL="no"
-        ;;
     *)
         echo "unsupported target: $TARGET" >&2
-        echo "usage: $0 --target <x86_64|aarch64>-unknown-linux-gnu" >&2
+        echo "usage: $0 --target x86_64-unknown-linux-gnu" >&2
         exit 2
         ;;
 esac
@@ -92,8 +88,6 @@ FFMPEG_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 # Defense-in-depth: VERSION drives the URL, but the source SHA256 is pinned.
 # Bumping VERSION without updating this table aborts the build.
 case "$FFMPEG_VERSION" in
-    8.1.2) SHA256="464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" ;;
-    8.1.1) SHA256="b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3" ;;
     9.0.2) SHA256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" ;;
     *)
         echo "✗ no pinned SHA256 for FFmpeg $FFMPEG_VERSION in scripts/build-linux.sh" >&2
@@ -153,9 +147,9 @@ fi
 
 # External deps come from the distro (apt); confirm pkg-config sees each before
 # we configure, so a missing -dev package fails here with a clear message rather
-# than as an opaque configure error. arm64 needs only gnutls + openh264 (no GPU).
-PC_DEPS="gnutls openh264"
-[ "$HW_ACCEL" = "yes" ] && PC_DEPS="gnutls libva libva-drm ffnvcodec openh264"
+# than as an opaque configure error. arm64 needs only gnutls + vpx (no GPU).
+PC_DEPS="gnutls vpx"
+[ "$HW_ACCEL" = "yes" ] && PC_DEPS="gnutls libva libva-drm ffnvcodec vpx"
 for pcfile in $PC_DEPS; do
     if ! pkg-config --exists "$pcfile" 2>/dev/null; then
         echo "✗ pkg-config can't find $pcfile" >&2
@@ -163,7 +157,7 @@ for pcfile in $PC_DEPS; do
             ffnvcodec) echo "  the pinned nv-codec-headers ${NVCODEC_TAG} install above failed — check git clone + make" >&2 ;;
             gnutls)    echo "  install: apt-get install libgnutls28-dev" >&2 ;;
             libva|libva-drm) echo "  install: apt-get install libva-dev" >&2 ;;
-            openh264)  echo "  install: apt-get install libopenh264-dev" >&2 ;;
+            vpx)       echo "  install: apt-get install libvpx-dev" >&2 ;;
         esac
         exit 1
     fi
@@ -208,9 +202,9 @@ if [ ! -f "$STAMP" ]; then
     #                              license discipline + no surprise deps
     #   --enable-static --disable-shared
     #                              FFmpeg's own libs static *into* the binary;
-    #                              external deps (gnutls/va/openh264) link
+    #                              external deps (gnutls/va/vpx) link
     #                              dynamically against the image's shared objects.
-    #   --enable-libopenh264       BSD-2-Clause CPU encoder. LGPL-clean.
+    #   --enable-libvpx            BSD-3-Clause VP9 software encoder/decoder. LGPL-clean.
     #   --enable-gnutls            (mac securetransport / win schannel → Linux
     #                              gnutls) TLS for rtmps:// egress. LGPLv2.1+.
     # x86_64 only (HW_ACCEL=yes):
@@ -220,17 +214,17 @@ if [ ! -f "$STAMP" ]; then
     #   --enable-vaapi             Intel iGPU + AMD via libva, plus the
     #                              hwupload/hwmap/scale_vaapi filters it needs.
     # arm64 omits all GPU paths — Ampere/Graviton have no encoder; it ships
-    # passthrough + software (libopenh264) only. (QSV/oneVPL stays omitted on both
+    # passthrough + software (libvpx_vp9) only. (QSV/oneVPL stays omitted on both
     # for V1.)
     HWACCEL_CONFIGURE=()
-    ENCODERS="libopenh264,aac"
+    ENCODERS="libvpx_vp9,aac"
     EXTRA_FILTERS=""
-    ACCEL_DESC="software (libopenh264) + passthrough only"
+    ACCEL_DESC="software (libvpx_vp9) + passthrough only"
     if [ "$HW_ACCEL" = "yes" ]; then
         HWACCEL_CONFIGURE=(--enable-ffnvcodec --enable-nvenc --enable-vaapi)
-        ENCODERS="h264_nvenc,hevc_nvenc,h264_vaapi,hevc_vaapi,libopenh264,aac"
+        ENCODERS="h264_nvenc,hevc_nvenc,h264_vaapi,hevc_vaapi,libvpx_vp9,aac"
         EXTRA_FILTERS=",hwupload,hwmap,scale_vaapi"
-        ACCEL_DESC="NVENC + VAAPI + libopenh264 CPU fallback"
+        ACCEL_DESC="NVENC + VAAPI + libvpx_vp9 CPU"
     fi
 
     echo "▶ configuring (LGPL only, ${ACCEL_DESC}, gnutls TLS) for ${TARGET}"
@@ -242,14 +236,14 @@ if [ ! -f "$STAMP" ]; then
         --disable-programs --enable-ffmpeg --enable-ffprobe \
         --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
         --disable-debug \
-        --enable-libopenh264 \
+        --enable-libvpx \
         --enable-gnutls \
         "${HWACCEL_CONFIGURE[@]}" \
         --enable-encoder="$ENCODERS" \
-        --enable-decoder=h264,hevc,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
-        --enable-muxer=flv,mp4,mov \
+        --enable-decoder=h264,hevc,libvpx_vp9,aac,mp3,pcm_s16le,pcm_s24le,pcm_f32le \
+        --enable-muxer=flv,mp4,mov,webm \
         --enable-demuxer=flv,mpegts,mov,mp4 \
-        --enable-parser=h264,hevc,aac \
+        --enable-parser=h264,hevc,vp9,aac \
         --enable-protocol=rtmp,rtmps,tls,tcp,udp,file,pipe \
         --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb \
         --enable-filter="scale,fps,format,aresample,asetnsamples,anull,null,copy${EXTRA_FILTERS}" \
@@ -282,7 +276,7 @@ echo "▶ verifying binary"
 
 # Read the configuration string out of the binary directly — defence-in-depth
 # even though we set the flags ourselves; catches an autodetect leak.
-CONFIG_LINE="$(strings "$BIN" | grep -E 'configuration:.*--disable-gpl' | head -n1 || true)"
+CONFIG_LINE="$(strings "$BIN" | grep -E '(configuration:[[:space:]]*)?--disable-gpl' | head -n1 || true)"
 if [ -z "$CONFIG_LINE" ]; then
     echo "✗ couldn't find embedded configuration string in $BIN" >&2
     exit 1
@@ -298,7 +292,7 @@ echo "  ✓ no GPL / non-free / v3 flags"
 
 # This binary links external libs dynamically (it isn't self-contained), so the
 # meaningful linkage check is the inverse of macOS's: confirm it does NOT pull in
-# any GPL/non-free codec library. libva/gnutls/libopenh264/libc are expected.
+# any GPL/non-free codec library. libva/gnutls/libvpx/libc are expected.
 DT_DEPS="$(ldd "$BIN" 2>/dev/null | awk '{print $1}')"
 FORBIDDEN_LIBS="$(echo "$DT_DEPS" | grep -E 'libx264|libx265|libfdk|libav.*gpl' || true)"
 if [ -n "$FORBIDDEN_LIBS" ]; then
@@ -310,8 +304,8 @@ echo "  ✓ no GPL/non-free shared libraries in the link"
 
 # Confirm each expected encoder ended up baked in (string-scan, no execution).
 SYMS="$(strings "$BIN")"
-NEEDED_ENCODERS=(libopenh264 'aac ')
-[ "$HW_ACCEL" = "yes" ] && NEEDED_ENCODERS=(h264_nvenc h264_vaapi libopenh264 'aac ')
+NEEDED_ENCODERS=(libvpx-vp9 'aac ')
+[ "$HW_ACCEL" = "yes" ] && NEEDED_ENCODERS=(h264_nvenc h264_vaapi libvpx-vp9 'aac ')
 for needed in "${NEEDED_ENCODERS[@]}"; do
     case "$SYMS" in
         *"$needed"*) ;;
@@ -322,9 +316,9 @@ for needed in "${NEEDED_ENCODERS[@]}"; do
     esac
 done
 if [ "$HW_ACCEL" = "yes" ]; then
-    echo "  ✓ nvenc + vaapi + libopenh264 + aac encoders present"
+    echo "  ✓ nvenc + vaapi + libvpx_vp9 + aac encoders present"
 else
-    echo "  ✓ libopenh264 + aac encoders present (software build)"
+    echo "  ✓ libvpx_vp9 + aac encoders present (software build)"
 fi
 
 # Native host: exercise both binaries end-to-end.
@@ -355,10 +349,6 @@ case "$FFMPEG_ARCH" in
     x86_64)
         MEDIAMTX_ASSET="mediamtx_v${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
         MEDIAMTX_SHA256="73ed27c292e05ceb4990dcb34531f01872dfff5374b7515c45a202e0abf47706"
-        ;;
-    aarch64)
-        MEDIAMTX_ASSET="mediamtx_v${MEDIAMTX_VERSION}_linux_arm64.tar.gz"
-        MEDIAMTX_SHA256="c78aa7a1bdab94b2b02be364661f17802143215dba37e1fa67c3e0849248b485"
         ;;
 esac
 MEDIAMTX_TARBALL="${REPO_ROOT}/build/${MEDIAMTX_ASSET}"
@@ -404,10 +394,11 @@ sleep 2
 
 smoke_push() { # $1 = output URL; echoes the final encode speed multiplier
     "$BIN" -hide_banner -loglevel warning -stats \
-        -f lavfi -i testsrc2=size=1920x1080:rate=60 -t 10 \
-        -c:v libopenh264 -b:v 8000k -maxrate 8000k -bufsize 8000k \
-        -f flv "$1" 2>&1 |
-        grep -o 'speed= *[0-9.]*x' | tail -1 | grep -o '[0-9.]*'
+            -f lavfi -i testsrc2=size=1920x1080:rate=60 -t 10 \
+            -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 8000k -maxrate 8000k -bufsize 8000k \
+            -tls_verify 0 \
+            -f flv "$1" 2>&1 |
+            grep -o 'speed= *[0-9.]*x' | tail -1 | grep -o '[0-9.]*'
 }
 
 RTMP_SPEED="$(smoke_push rtmp://127.0.0.1:13935/smoke || echo 0)"
@@ -456,7 +447,7 @@ scripts used to produce this binary are at:
 
   https://github.com/serversideup/ffmpeg-lgpl-builds
 
-This binary links its external libraries (gnutls, libva, libopenh264) dynamically
+This binary links its external libraries (gnutls, libva, libvpx) dynamically
 against the libraries provided by the Polycast Docker image's distribution
 packages; those libraries carry their own licenses (LGPL/BSD/MIT). Check out the
 tag matching this binary's release to reproduce the build.
